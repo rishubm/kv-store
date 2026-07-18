@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 )
@@ -129,3 +130,73 @@ func TestConcurrentKV(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestWALPersistence(t *testing.T) {
+	// 1. Back up any existing `./wal.log`
+	const targetWal = "./wal.log"
+	const backupWal = "./wal.log.bak"
+	
+	backedUp := false
+	if _, err := os.Stat(targetWal); err == nil {
+		err := os.Rename(targetWal, backupWal)
+		if err != nil {
+			t.Fatalf("failed to backup wal.log: %v", err)
+		}
+		backedUp = true
+	}
+	
+	defer func() {
+		// Clean up the test wal
+		os.Remove(targetWal)
+		// Restore backup
+		if backedUp {
+			os.Rename(backupWal, targetWal)
+		}
+	}()
+	
+	// Ensure start with a fresh slate (wal.log removed)
+	os.Remove(targetWal)
+	
+	// 2. Append some logs using AppendLog
+	if _, err := AppendLog("PUT", "k1", "v1"); err != nil {
+		t.Fatalf("failed to append log: %v", err)
+	}
+	if _, err := AppendLog("PUT", "k2", "v2"); err != nil {
+		t.Fatalf("failed to append log: %v", err)
+	}
+	if _, err := AppendLog("DELETE", "k1", ""); err != nil {
+		t.Fatalf("failed to append log: %v", err)
+	}
+	if _, err := AppendLog("PUT", "k3", "v3"); err != nil {
+		t.Fatalf("failed to append log: %v", err)
+	}
+	
+	// 3. Create a new KVServer and replay the log
+	server := &KVServer{
+		mp: make(map[string]string),
+	}
+	
+	err := ReplayLog(server)
+	if err != nil {
+		t.Fatalf("failed to replay log: %v", err)
+	}
+	
+	// 4. Verify replayed state
+	expected := map[string]string{
+		"k2": "v2",
+		"k3": "v3",
+	}
+	
+	if len(server.mp) != len(expected) {
+		t.Errorf("expected map length %d, got %d. Map content: %v", len(expected), len(server.mp), server.mp)
+	}
+	for k, expectedVal := range expected {
+		val, exists := server.mp[k]
+		if !exists {
+			t.Errorf("expected key %q to exist, but it was not found", k)
+		} else if val != expectedVal {
+			t.Errorf("expected key %q to have value %q, got %q", k, expectedVal, val)
+		}
+	}
+}
+
