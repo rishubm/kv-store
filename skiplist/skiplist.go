@@ -14,6 +14,9 @@ type SkipList interface {
 
 	// Iterator returns an iterator to traverse the SkipList in sorted order.
 	Iterator() Iterator
+
+	// Returns the approximate size in bytes of the keys and values.
+	ApproximateSize() uint64
 }
 
 type Iterator interface {
@@ -40,6 +43,7 @@ type skipListImpl struct {
 	maxLevel int
 	level    int     // Current highest non-empty level
 	p        float64 // Probability of promoting a node to the next level (typically 0.5 or 0.25)
+	size     uint64
 }
 
 type iteratorImpl struct {
@@ -48,7 +52,7 @@ type iteratorImpl struct {
 
 func NewSkipList(maxLevel int) SkipList {
 	head := &Node{"", "", make([]*Node, maxLevel)}
-	return &skipListImpl{head, maxLevel, 0, 0.5}
+	return &skipListImpl{head, maxLevel, 0, 0.5, 0}
 }
 
 func (sl *skipListImpl) Get(key string) (string, bool) {
@@ -81,6 +85,7 @@ func (sl *skipListImpl) Put(key string, value string) {
 			lvl--
 		} else if curr.next[lvl].key == key {
 			// found it, just update the value
+			sl.size = sl.size - uint64(len(curr.next[lvl].value)) + uint64(len(value))
 			curr.next[lvl].value = value
 			return
 		} else {
@@ -103,8 +108,8 @@ func (sl *skipListImpl) Put(key string, value string) {
 	}
 	if insert_lvl > sl.level {
 		sl.level = insert_lvl
-
 	}
+	sl.size += uint64(len(key) + len(value))
 }
 
 func (sl *skipListImpl) genLevel() int {
@@ -126,6 +131,7 @@ func (sl *skipListImpl) Delete(key string) bool {
 			// found the first node on this level not less than target
 			updates[lvl] = curr
 			if curr.next[lvl] != nil && curr.next[lvl].key == key && found_lvl == -1 {
+				sl.size -= uint64(len(curr.next[lvl].value) + len(key))
 				found_lvl = lvl
 			}
 			lvl--
@@ -152,6 +158,10 @@ func (sl *skipListImpl) Delete(key string) bool {
 		sl.level--
 	}
 	return true
+}
+
+func (sl *skipListImpl) ApproximateSize() uint64 {
+	return sl.size
 }
 
 func (sl *skipListImpl) Iterator() Iterator {
