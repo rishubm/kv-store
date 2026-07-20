@@ -5,6 +5,7 @@ import (
 
 	"github.com/rishubm/kv-store/memtable"
 	"github.com/rishubm/kv-store/sstable"
+	"github.com/rishubm/kv-store/wal"
 )
 
 type Engine interface {
@@ -24,17 +25,21 @@ type engineImpl struct {
 }
 
 func (e *engineImpl) Put(key string, value string) {
-	e.mutex.RLock()
+	e.mutex.Lock()
+	err := wal.AppendLog(wal.Put, key, value)
+	if err != nil {
+		panic(err)
+	}
 	e.activeMem.Put(key, value)
 	reachedThreshold := e.activeMem.Size() > e.activeMemThreshold
-	e.mutex.RUnlock()
+	e.mutex.Unlock()
 
 	if reachedThreshold {
 		// lock acquired = guarantee no goroutines are currently writing to the active memtable
 		e.mutex.Lock()
 		// Double check as another goroutine might have already swapped
 		if e.activeMem.Size() > e.activeMemThreshold {
-			
+
 			// wait on the cond var to avoid overwriting immMem before it's flushed
 			for e.immMem != nil {
 				e.cond.Wait()
@@ -83,6 +88,12 @@ func (e *engineImpl) Get(key string) (string, bool) {
 }
 
 func (e *engineImpl) Delete(key string) bool {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	err := wal.AppendLog(wal.Delete, key, "")
+	if err != nil {
+		panic(err)
+	}
 	return e.activeMem.Delete(key)
 }
 
@@ -113,6 +124,16 @@ func NewEngine(threshold uint64) Engine {
 	sstables := make([]string, 0)
 	mu := &sync.RWMutex{}
 	e := &engineImpl{activeMem, nil, flushChannel, threshold, mu, sstables, sync.NewCond(mu)}
+
+	// Replay the WAL for any lost changes
+	entries, _ := wal.ReplayLog()
+	for _, entry := range entries {
+		if entry.Op == wal.Put {
+			e.activeMem.Put(entry.Key, entry.Value)
+		} else {
+			e.activeMem.Delete(entry.Key)
+		}
+	}
 	// start the flush worker goroutine
 	go e.flushWorker()
 	return e
