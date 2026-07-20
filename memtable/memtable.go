@@ -13,12 +13,12 @@ type Memtable interface {
 	Get(key string) (string, bool)
 	Delete(key string) bool
 	Size() uint64
+	Iterator() skiplist.Iterator
 }
 
 type memtableImpl struct {
-	mutex sync.RWMutex
+	mutex *sync.RWMutex
 	store skiplist.SkipList
-	size  int64
 }
 
 func (m *memtableImpl) Put(key string, value string) {
@@ -48,6 +48,10 @@ func (m *memtableImpl) Size() uint64 {
 	return m.store.ApproximateSize()
 }
 
+func (m *memtableImpl) Iterator() skiplist.Iterator {
+	return m.store.Iterator()
+}
+
 func NewMemtable() Memtable {
-	return &memtableImpl{sync.RWMutex{}, skiplist.NewSkipList(16), 0}
+	return &memtableImpl{&sync.RWMutex{}, skiplist.NewSkipList(16)}
 }

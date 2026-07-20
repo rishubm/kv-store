@@ -1,6 +1,9 @@
 package skiplist
 
-import "math/rand/v2"
+import (
+	"math/rand/v2"
+	"sync/atomic"
+)
 
 type SkipList interface {
 	// Put inserts or updates a key-value pair.
@@ -161,7 +164,7 @@ func (sl *skipListImpl) Delete(key string) bool {
 }
 
 func (sl *skipListImpl) ApproximateSize() uint64 {
-	return sl.size
+	return atomic.LoadUint64(&sl.size)
 }
 
 func (sl *skipListImpl) Iterator() Iterator {
