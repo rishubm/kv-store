@@ -15,6 +15,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	// clean up SSTable files written during tests
 	os.RemoveAll("./data")
+	os.RemoveAll("../wal.log")
 	os.Exit(code)
 }
 
@@ -115,5 +116,28 @@ func TestFlushAndRead(t *testing.T) {
 		if got != want {
 			t.Errorf("key %q: expected %q, got %q", k, want, got)
 		}
+	}
+}
+
+func TestWriteAheadLog(t *testing.T) {
+	tinyThreshold := uint64(16)
+	e := NewEngine(tinyThreshold)
+	e.Put("hello", "world")
+	e.Put("hello1", "world1")
+	e.Put("hello2", "world2")
+	e.Put("deleted", "soon")
+	e.Delete("deleted")
+	// reopen the engine - log should replay and populate the memtable
+	e = NewEngine(tinyThreshold)
+	val, ok := e.Get("hello")
+	if !ok {
+		t.Fatal("expected key 'hello' to be present")
+	}
+	if val != "world" {
+		t.Fatalf("expected 'world', got %q", val)
+	}
+	val, ok = e.Get("deleted")
+	if ok {
+		t.Fatal("expected key 'deleted' to be absent")
 	}
 }
