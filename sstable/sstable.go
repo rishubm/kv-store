@@ -10,6 +10,8 @@ import (
 	"github.com/rishubm/kv-store/memtable"
 )
 
+const Tombstone = "\x00TOMBSTONE\x00"
+
 // Write serializes a memtable to an SSTable file on disk in sorted key order.
 // dir is the directory where the file will be created.
 // Returns the path to the created file, or an error.
@@ -62,7 +64,7 @@ func Read(path string, key string) (string, bool, error) {
 		valBytes := make([]byte, valLen)
 		io.ReadFull(file, valBytes)
 
-		if string(keyBytes) == key {
+		if string(keyBytes) == key && string(valBytes) != Tombstone {
 			return string(valBytes), true, nil
 		}
 	}
