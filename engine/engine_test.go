@@ -96,8 +96,8 @@ func TestMultipleKeys(t *testing.T) {
 // Writes beyond the threshold trigger a flush; the key must still be readable
 func TestFlushAndRead(t *testing.T) {
 	// Use a 1KB threshold so a flush is forced quickly
-	tinyThreshold := uint64(1 << 10)
-	e := NewEngine(tinyThreshold)
+	smallThreshold := uint64(1 << 10)
+	e := NewEngine(smallThreshold)
 
 	// Write enough data to exceed the threshold and trigger a flush
 	for i := 0; i < 2000; i++ {
@@ -116,6 +116,31 @@ func TestFlushAndRead(t *testing.T) {
 		if got != want {
 			t.Errorf("key %q: expected %q, got %q", k, want, got)
 		}
+	}
+}
+
+// On reading from SStables it should read the newest values
+func TestFlushGetUsesNewest(t *testing.T) {
+	tinyThreshold := uint64(16)
+	e := NewEngine(tinyThreshold)
+	e.Put("hello", "world")
+	e.Put("hello1", "world1")
+
+	e.Put("hello", "goodbye")
+	e.Put("hello1", "goodbye1")
+
+	// fill the memtable to force a rotation
+	e.Put("aaaaaaaa", "bbbbbbbb")
+	e.Put("bbbbbbbb", "cccccccc")
+	e.Put("cccccccc", "dddddddd")
+	e.Put("eeeeeeee", "ffffffff")
+
+	val, ok := e.Get("hello")
+	if !ok {
+		t.Fatal("expected key 'hello' to be present")
+	}
+	if val != "goodbye" {
+		t.Fatalf("expected 'goodbye', got %q", val)
 	}
 }
 
