@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"slices"
 	"sync"
 
 	"github.com/rishubm/kv-store/memtable"
@@ -61,21 +62,33 @@ func (e *engineImpl) Put(key string, value string) {
 
 func (e *engineImpl) Get(key string) (string, bool) {
 	// First check active memtable
+	e.mutex.RLock()
 	val, present := e.activeMem.Get(key)
 	if present {
+		e.mutex.RUnlock()
 		return val, true
 	}
+	e.mutex.RUnlock()
 
 	// check immutable memtable to see if being flushed to disk
+	e.mutex.RLock()
 	if e.immMem != nil {
 		val, present = e.immMem.Get(key)
 		if present {
+			e.mutex.RUnlock()
 			return val, true
 		}
 	}
+	e.mutex.RUnlock()
 
-	// otherwise check sstable
-	for _, path := range e.sstables {
+	// otherwise check sstable in decsending time order
+	e.mutex.RLock()
+	sorted := e.sstables
+	e.mutex.RUnlock()
+	slices.Sort(sorted)
+	slices.Reverse(sorted)
+
+	for _, path := range sorted {
 		val, present, err := sstable.Read(path, key)
 		if err != nil {
 			panic(err.Error())
