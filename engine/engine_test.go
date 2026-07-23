@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 // 4 MB
@@ -165,4 +166,36 @@ func TestWriteAheadLog(t *testing.T) {
 	if ok {
 		t.Fatal("expected key 'deleted' to be absent")
 	}
+}
+
+func TestCompaction(t *testing.T) {
+	// ~2 K/V pairs per SStable
+	tinyThreshold := uint64(16)
+	e := NewEngine(tinyThreshold)
+
+	// 8 keys with 2 K/V pairs per SStable should merge 4 -> 1 sstable
+	for i := range 8 {
+		e.Put(fmt.Sprintf("key-%d", i), fmt.Sprintf("value-%d", i))
+	}
+
+	// All keys must still be available
+	for i := range 8 {
+		k := fmt.Sprintf("key-%d", i)
+		want := fmt.Sprintf("value-%d", i)
+		got, ok := e.Get(k)
+		if !ok {
+			t.Errorf("key %q missing after flush", k)
+			continue
+		}
+		if got != want {
+			t.Errorf("key %q: expected %q, got %q", k, want, got)
+		}
+	}
+	// give time to delete the old tables
+	time.Sleep(1 * time.Second)
+	expectedCount := 1
+	if entries, _ := os.ReadDir("./data"); len(entries) != expectedCount {
+		t.Errorf("expected %d sstable(s), got %d", expectedCount, len(entries))
+	}
+
 }
