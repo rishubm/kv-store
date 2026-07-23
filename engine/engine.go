@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"os"
 	"slices"
 	"sync"
 
@@ -19,11 +20,15 @@ type engineImpl struct {
 	activeMem          memtable.Memtable
 	immMem             memtable.Memtable
 	flushChan          chan memtable.Memtable
+	compactChan        chan struct{}
 	activeMemThreshold uint64
 	mutex              *sync.RWMutex
 	sstables           []string
 	cond               *sync.Cond
 }
+
+// Maximum number of SSTables before merging
+const maxSSTableCount uint8 = 4
 
 func (e *engineImpl) Put(key string, value string) {
 	e.mutex.Lock()
@@ -123,10 +128,52 @@ func (e *engineImpl) flushWorker() {
 		e.mutex.Lock()
 
 		e.immMem = nil
+		
 		// signal that it's okay to overwrite the immutable memtable
 		e.cond.Signal()
 		e.sstables = append(e.sstables, path)
 		e.mutex.Unlock()
+
+		// Trigger compaction if needed
+		select {
+		// send to the channel, telling it's ready to compact
+		case e.compactChan <- struct{}{}:
+		// otherwise return/skip since the channel is busy
+		default:
+		}
+	}
+
+}
+
+// Compacts sstables on disk using merge
+func (e *engineImpl) compactWorker() {
+	for range e.compactChan {
+		// Check if we actually need to compact
+		e.mutex.RLock()
+		var snapshot []string = nil
+		if len(e.sstables) >= int(maxSSTableCount) {
+			snapshot = slices.Clone(e.sstables)
+		}
+		e.mutex.RUnlock()
+
+		if snapshot != nil {
+			newFile, err := sstable.Merge(snapshot, "./data/")
+			if err != nil {
+				panic(err.Error())
+			}
+
+			// write the new file
+			e.mutex.Lock()
+			e.sstables = append(e.sstables, newFile)
+			e.sstables = e.sstables[len(snapshot):]
+			e.mutex.Unlock()
+
+			// safe to delete the old files since they are no longer referenced
+			for _, path := range snapshot {
+				os.Remove(path)
+			}
+		}
+
 	}
 
 }
@@ -134,9 +181,10 @@ func (e *engineImpl) flushWorker() {
 func NewEngine(threshold uint64) Engine {
 	activeMem := memtable.NewMemtable()
 	flushChannel := make(chan memtable.Memtable, 1)
+	comapctChannel := make(chan struct{}, 1)
 	sstables := make([]string, 0)
 	mu := &sync.RWMutex{}
-	e := &engineImpl{activeMem, nil, flushChannel, threshold, mu, sstables, sync.NewCond(mu)}
+	e := &engineImpl{activeMem, nil, flushChannel, comapctChannel, threshold, mu, sstables, sync.NewCond(mu)}
 
 	// Replay the WAL for any lost changes
 	entries, _ := wal.ReplayLog()
@@ -147,7 +195,8 @@ func NewEngine(threshold uint64) Engine {
 			e.activeMem.Delete(entry.Key)
 		}
 	}
-	// start the flush worker goroutine
+	// start the flush and comapct worker goroutines
 	go e.flushWorker()
+	go e.compactWorker()
 	return e
 }
