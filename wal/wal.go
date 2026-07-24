@@ -4,9 +4,12 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+	"slices"
+	"strconv"
+	"time"
 )
 
-const wal_name string = "../wal.log"
+const wal_dir string = "../wal-data/"
 
 type Opcode uint8
 
@@ -16,14 +19,18 @@ const (
 	Delete
 )
 
+type WalWrapper struct {
+	wal_name string
+}
+
 type LogEntry struct {
 	Op    Opcode
 	Key   string
 	Value string
 }
 
-func AppendLog(op Opcode, k string, v string) error {
-	file, err := os.OpenFile(wal_name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+func (w *WalWrapper) AppendLog(op Opcode, k string, v string) error {
+	file, err := os.OpenFile(w.wal_name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		return err
 	}
@@ -44,12 +51,12 @@ func AppendLog(op Opcode, k string, v string) error {
 	return nil
 }
 
-func ReplayLog() ([]LogEntry, error) {
-	if _, err := os.Stat(wal_name); os.IsNotExist(err) {
+func (w *WalWrapper) ReplayLog() ([]LogEntry, error) {
+	if _, err := os.Stat(w.wal_name); os.IsNotExist(err) {
 		// log doesn't exist, first run not an error
 		return []LogEntry{}, nil
 	}
-	file, err := os.Open(wal_name)
+	file, err := os.Open(w.wal_name)
 	if err != nil {
 		return []LogEntry{}, err
 	}
@@ -81,4 +88,27 @@ func ReplayLog() ([]LogEntry, error) {
 
 	}
 	return entries, nil
+}
+
+func (w *WalWrapper) RotateLog() string {
+	path := wal_dir + "wal" + strconv.FormatInt(time.Now().UnixNano(), 10) + ".log"
+	old := w.wal_name
+	w.wal_name = path
+	return old
+
+}
+
+func NewWalWrapper() *WalWrapper {
+	if err := os.MkdirAll(wal_dir, 0755); err != nil {
+		panic(err)
+	}
+	entries, err := os.ReadDir(wal_dir)
+	path := ""
+	if err != nil || len(entries) == 0 {
+		path = wal_dir + "wal" + strconv.FormatInt(time.Now().UnixNano(), 10) + ".log"
+	} else {
+		slices.Reverse(entries)
+		path = wal_dir + entries[0].Name()
+	}
+	return &WalWrapper{path}
 }

@@ -10,7 +10,8 @@ const Tombstone = "\x00TOMBSTONE\x00"
 
 type Memtable interface {
 	Put(key string, value string)
-	Get(key string) (string, bool)
+	// Get returns (value, found, deleted).
+	Get(key string) (string, bool, bool)
 	Delete(key string) bool
 	Size() uint64
 	Iterator() skiplist.Iterator
@@ -27,14 +28,17 @@ func (m *memtableImpl) Put(key string, value string) {
 	m.store.Put(key, value)
 }
 
-func (m *memtableImpl) Get(key string) (string, bool) {
+func (m *memtableImpl) Get(key string) (string, bool, bool) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
 	val, present := m.store.Get(key)
-	if !present || val == Tombstone {
-		return "", false
+	if !present {
+		return "", false, false
 	}
-	return val, true
+	if val == Tombstone {
+		return "", false, true
+	}
+	return val, true, false
 }
 
 func (m *memtableImpl) Delete(key string) bool {

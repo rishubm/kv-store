@@ -25,6 +25,7 @@ type engineImpl struct {
 	mutex              *sync.RWMutex
 	sstables           []string
 	cond               *sync.Cond
+	wal                *wal.WalWrapper
 }
 
 // Maximum number of SSTables before merging
@@ -32,7 +33,7 @@ const maxSSTableCount uint8 = 4
 
 func (e *engineImpl) Put(key string, value string) {
 	e.mutex.Lock()
-	err := wal.AppendLog(wal.Put, key, value)
+	err := e.wal.AppendLog(wal.Put, key, value)
 	if err != nil {
 		panic(err)
 	}
@@ -68,47 +69,55 @@ func (e *engineImpl) Put(key string, value string) {
 func (e *engineImpl) Get(key string) (string, bool) {
 	// First check active memtable
 	e.mutex.RLock()
-	val, present := e.activeMem.Get(key)
+	val, present, deleted := e.activeMem.Get(key)
+	e.mutex.RUnlock()
 	if present {
-		e.mutex.RUnlock()
 		return val, true
 	}
-	e.mutex.RUnlock()
+	if deleted {
+		return "", false
+	}
 
 	// check immutable memtable to see if being flushed to disk
 	e.mutex.RLock()
 	if e.immMem != nil {
-		val, present = e.immMem.Get(key)
+		val, present, deleted = e.immMem.Get(key)
 		if present {
 			e.mutex.RUnlock()
 			return val, true
+		}
+		if deleted {
+			e.mutex.RUnlock()
+			return "", false
 		}
 	}
 	e.mutex.RUnlock()
 
 	// otherwise check sstable in decsending time order
 	e.mutex.RLock()
-	sorted := e.sstables
-	e.mutex.RUnlock()
+	sorted := slices.Clone(e.sstables)
 	slices.Sort(sorted)
 	slices.Reverse(sorted)
 
 	for _, path := range sorted {
 		val, present, err := sstable.Read(path, key)
 		if err != nil {
+			e.mutex.RUnlock()
 			panic(err.Error())
 		}
 		if present {
+			e.mutex.RUnlock()
 			return val, true
 		}
 	}
+	e.mutex.RUnlock()
 	return "", false
 }
 
 func (e *engineImpl) Delete(key string) bool {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
-	err := wal.AppendLog(wal.Delete, key, "")
+	err := e.wal.AppendLog(wal.Delete, key, "")
 	if err != nil {
 		panic(err)
 	}
@@ -128,7 +137,6 @@ func (e *engineImpl) flushWorker() {
 		e.mutex.Lock()
 
 		e.immMem = nil
-		
 		// signal that it's okay to overwrite the immutable memtable
 		e.cond.Signal()
 		e.sstables = append(e.sstables, path)
@@ -184,10 +192,19 @@ func NewEngine(threshold uint64) Engine {
 	comapctChannel := make(chan struct{}, 1)
 	sstables := make([]string, 0)
 	mu := &sync.RWMutex{}
-	e := &engineImpl{activeMem, nil, flushChannel, comapctChannel, threshold, mu, sstables, sync.NewCond(mu)}
+	e := &engineImpl{activeMem, nil, flushChannel, comapctChannel, threshold, mu, sstables, sync.NewCond(mu), wal.NewWalWrapper()}
+
+	// Load any SSTables written in a previous run
+	if diskEntries, err := os.ReadDir("./data/"); err == nil {
+		for _, de := range diskEntries {
+			if !de.IsDir() {
+				e.sstables = append(e.sstables, "./data/"+de.Name())
+			}
+		}
+	}
 
 	// Replay the WAL for any lost changes
-	entries, _ := wal.ReplayLog()
+	entries, _ := e.wal.ReplayLog()
 	for _, entry := range entries {
 		if entry.Op == wal.Put {
 			e.activeMem.Put(entry.Key, entry.Value)

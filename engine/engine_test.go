@@ -16,7 +16,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	// clean up SSTable files written during tests
 	os.RemoveAll("./data")
-	os.RemoveAll("../wal.log")
+	os.RemoveAll("../wal-data")
 	os.Exit(code)
 }
 
