@@ -20,6 +20,7 @@ const (
 )
 
 type WalWrapper struct {
+	// the write-ahead log to write to
 	wal_name string
 }
 
@@ -52,40 +53,41 @@ func (w *WalWrapper) AppendLog(op Opcode, k string, v string) error {
 }
 
 func (w *WalWrapper) ReplayLog() ([]LogEntry, error) {
-	if _, err := os.Stat(w.wal_name); os.IsNotExist(err) {
-		// log doesn't exist, first run not an error
-		return []LogEntry{}, nil
-	}
-	file, err := os.Open(w.wal_name)
-	if err != nil {
-		return []LogEntry{}, err
-	}
-	defer file.Close()
 	entries := make([]LogEntry, 0)
+	// Read ALL write-ahead logs in the directory and append ALL entries
+	if logs, err := os.ReadDir(wal_dir); err == nil {
+		for _, log := range logs {
+			file, err := os.Open(wal_dir + log.Name())
+			if err != nil {
+				return []LogEntry{}, err
+			}
+			defer file.Close()
 
-	for {
-		var op Opcode
-		err = binary.Read(file, binary.LittleEndian, &op)
-		if err == io.EOF {
-			break
+			for {
+				var op Opcode
+				err = binary.Read(file, binary.LittleEndian, &op)
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return []LogEntry{}, err
+				}
+
+				var keyLen uint32
+				binary.Read(file, binary.LittleEndian, &keyLen)
+
+				keyBytes := make([]byte, keyLen)
+				io.ReadFull(file, keyBytes)
+
+				var valLen uint32
+				binary.Read(file, binary.LittleEndian, &valLen)
+
+				valBytes := make([]byte, valLen)
+				io.ReadFull(file, valBytes)
+				entries = append(entries, LogEntry{op, string(keyBytes), string(valBytes)})
+
+			}
 		}
-		if err != nil {
-			return []LogEntry{}, err
-		}
-
-		var keyLen uint32
-		binary.Read(file, binary.LittleEndian, &keyLen)
-
-		keyBytes := make([]byte, keyLen)
-		io.ReadFull(file, keyBytes)
-
-		var valLen uint32
-		binary.Read(file, binary.LittleEndian, &valLen)
-
-		valBytes := make([]byte, valLen)
-		io.ReadFull(file, valBytes)
-		entries = append(entries, LogEntry{op, string(keyBytes), string(valBytes)})
-
 	}
 	return entries, nil
 }

@@ -19,13 +19,18 @@ type Engine interface {
 type engineImpl struct {
 	activeMem          memtable.Memtable
 	immMem             memtable.Memtable
-	flushChan          chan memtable.Memtable
+	flushChan          chan FlushPayload
 	compactChan        chan struct{}
 	activeMemThreshold uint64
 	mutex              *sync.RWMutex
 	sstables           []string
 	cond               *sync.Cond
 	wal                *wal.WalWrapper
+}
+
+type FlushPayload struct {
+	mem memtable.Memtable
+	log string
 }
 
 // Maximum number of SSTables before merging
@@ -56,9 +61,10 @@ func (e *engineImpl) Put(key string, value string) {
 			old := e.immMem
 			// make a fresh memtable
 			e.activeMem = memtable.NewMemtable()
+			oldLog := e.wal.RotateLog()
 			e.mutex.Unlock()
 			// send the old (immutable) memtable to get flushed to disk
-			e.flushChan <- old
+			e.flushChan <- FlushPayload{old, oldLog}
 			return
 		}
 		e.mutex.Unlock()
@@ -128,7 +134,9 @@ func (e *engineImpl) Delete(key string) bool {
 func (e *engineImpl) flushWorker() {
 
 	// wait for the old memtable from the channel
-	for mem := range e.flushChan {
+	for payload := range e.flushChan {
+		mem := payload.mem
+
 		path, err := sstable.Write(mem, "./data/")
 		if err != nil {
 			panic("failed to flush memtable to disk" + err.Error())
@@ -140,6 +148,8 @@ func (e *engineImpl) flushWorker() {
 		// signal that it's okay to overwrite the immutable memtable
 		e.cond.Signal()
 		e.sstables = append(e.sstables, path)
+		// delete the old WAL
+		os.Remove(payload.log)
 		e.mutex.Unlock()
 
 		// Trigger compaction if needed
@@ -188,7 +198,7 @@ func (e *engineImpl) compactWorker() {
 
 func NewEngine(threshold uint64) Engine {
 	activeMem := memtable.NewMemtable()
-	flushChannel := make(chan memtable.Memtable, 1)
+	flushChannel := make(chan FlushPayload, 1)
 	comapctChannel := make(chan struct{}, 1)
 	sstables := make([]string, 0)
 	mu := &sync.RWMutex{}

@@ -150,10 +150,15 @@ func TestWriteAheadLog(t *testing.T) {
 	e := NewEngine(tinyThreshold)
 	e.Put("hello", "world")
 	e.Put("hello1", "world1")
+	// should flush now, rotate log
 	e.Put("hello2", "world2")
 	e.Put("deleted", "soon")
+	// another flush here
 	e.Delete("deleted")
-	// reopen the engine - log should replay and populate the memtable
+
+	time.Sleep(time.Second)
+
+	// Restart engine to test durability
 	e = NewEngine(tinyThreshold)
 	val, ok := e.Get("hello")
 	if !ok {
